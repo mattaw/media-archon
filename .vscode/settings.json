@@ -1,0 +1,9 @@
+{
+  "python.formatting.provider": "black",
+  "python.linting.flake8Enabled": true,
+  "editor.formatOnSave": true,
+  "python.analysis.inlayHints.functionReturnTypes": false,
+  "python.analysis.inlayHints.variableTypes": false,
+  "python.linting.enabled": true,
+  "explorer.excludeGitIgnore": true
+}

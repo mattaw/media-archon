@@ -1,0 +1,40 @@
+[project]
+name = "media-archon"
+dynamic = ["version"]
+description = "Mirror a directory tree of audio files converting the files to opus if needed"
+authors = [
+    {name = "Matthew Swabey", email = "matthew@swabey.org"},
+]
+dependencies = [
+    "attrs>=21.4.0",
+    "cattrs>=22.1.0",
+    "click>=8.1.3",
+]
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "AGPL-3.0-or-later"}
+
+[project.scripts]
+media-archon = "media_archon.cli:main"
+
+[project.optional-dependencies]
+
+[tool.pdm]
+version = { source = "file", path = "media_archon/__about__.py" }
+
+[tool.pdm.dev-dependencies]
+test = [
+    "pytest>=7.1.2",
+    "black>=22.6.0",
+    "flake8>=4.0.1",
+    "mypy>=0.971",
+]
+
+[tool.pdm.scripts]
+
+[tool.flake8]
+max-line-length = 88
+
+[build-system]
+requires = ["pdm-pep517>=1.0.0"]
+build-backend = "pdm.pep517.api"
