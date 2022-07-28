@@ -3,11 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 from pathlib import Path
-from typing import Optional
 
 import click
 
-from .factory import Factory
+from .walker import WalkerFactory
 
 CONFIG_FILE = "media-archon.toml"
 
@@ -28,9 +27,9 @@ def show_help_and_exit() -> None:
     help="Specify a config file.",
 )
 @click.version_option()
-def main(config: Optional[Path]) -> None:
+def main(config: Path) -> None:
     try:
-        config_file = open(config)
+        factory = WalkerFactory.from_toml(config)
     except FileNotFoundError:
         click.echo(f"Could not find configuration file {CONFIG_FILE}.\n")
         show_help_and_exit()
@@ -38,5 +37,6 @@ def main(config: Optional[Path]) -> None:
         click.echo(f"Could not read configuration file {CONFIG_FILE}.\n")
         show_help_and_exit()
 
-    Factory.from_toml(config_file)
+    factory.build_and_run()
+
     return
