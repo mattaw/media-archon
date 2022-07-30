@@ -1,7 +1,7 @@
 # walkers = 100
 # converters = 20
-source = "/fish/syncthing/Music Archive"
-target = "/fish/syncthing/Music"
+src_dir = "/fish/syncthing/Music Archive"
+tgt_dir = "/fish/syncthing/Music"
 
 [copier]
 inputs = [".jpg", ".jpeg", ".png", ".opus"]
@@ -10,5 +10,8 @@ inputs = [".jpg", ".jpeg", ".png", ".opus"]
 inputs = [".wav", ".pcm", ".flac", ".mp3"]
 output = ".ogg"
 exe = "~/freac-1.1.6-linux-x86_64.AppImage"
-cmd = "-e opus -b 160 {input} -o {output}"
+cmd = "freaccmd --quiet -e opus --bitrate {bitrate} {input} -o {output}"
 config = "media-archon-override.toml"
+
+[converter.cmd_args]
+bitrate = 160

@@ -6,12 +6,13 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from collections.abc import Iterable
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from logging import getLogger
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 import tomli
 from attrs import define, evolve
@@ -27,17 +28,6 @@ logger = getLogger(__name__)
 # There is a light ThreadPoolExecutor to manage the overlapping IO and directory
 # exploration, and any copying that is needed. Thinking cpu_count() * 100?
 # Heavy threadpool should be cpu_count * 2
-
-
-def validate_suffix(_, dummy, value):
-    pattern = re.compile(r"^\.[\w]+$")
-    if isinstance(value, Iterable):
-        for suf in value:
-            if not pattern.match(suf):
-                raise ValueError("File suffixes must be of the form .a-z0-9")
-    else:
-        if not pattern.match(value):
-            raise ValueError("File suffixes must be of the form .a-z0-9")
 
 
 def validate_pos_int(var_: Any) -> int:
@@ -80,8 +70,8 @@ class WalkerConfException(Exception):
 
 @define
 class Walker:
-    source: Path
-    target: Path
+    src_dir: Path
+    tgt_dir: Path
     walker_threadpool: ThreadPoolExecutor
     converter_threadpool: ThreadPoolExecutor  # Smaller number of threads for conversion
     results: Queue[Future]
@@ -90,6 +80,7 @@ class Walker:
     converter_exe: Path
     converter_output: str
     converter_cmd: str
+    converter_cmd_args: Dict[str, Union[int, str]]
     config_file_name: str
 
     @classmethod
@@ -157,40 +148,39 @@ class Walker:
         logger.info("Walker threadpool created. Size: %d", num_walkers)
         logger.info("Converter threadpool created. Size: %d", num_converters)
 
-        # Create results queue
-        results: Queue[Future] = Queue(maxsize=num_walkers + num_converters + 10)
-        logger.debug("Size of results queue: %d", results.maxsize)
+        # Create results queue - this can get quite large!
+        results: Queue[Future] = Queue()
 
         # Check/sanitize source and target:
         try:
-            source_path_str = toml_dict["source"]
-            source = validate_is_dir(source_path_str)
+            src_dir_str = toml_dict["src_dir"]
+            src_dir = validate_is_dir(src_dir_str)
         except KeyError as e:
             raise WalkerConfException(
-                "source=<dir> must be defined in the config."
+                "src_dir=<dir> must be defined in the config."
             ) from e
         except TypeError as e:
             raise WalkerConfException(
-                f"source={source_path_str} is not a valid directory"
+                f"src_dir={src_dir_str} is not a valid directory"
                 " path on this operating system."
             ) from e
         except FileNotFoundError:
-            raise WalkerConfException(f"{source_path_str} was not found.")
+            raise WalkerConfException(f"{src_dir_str} was not found.")
 
         try:
-            target_path_str = toml_dict["target"]
-            target = validate_is_dir(target_path_str)
+            tgt_dir_str = toml_dict["tgt_dir"]
+            tgt_dir = validate_is_dir(tgt_dir_str)
         except KeyError as e:
             raise WalkerConfException(
-                "target=<dir> must be defined in the config."
+                "tgt_dir=<dir> must be defined in the config."
             ) from e
         except TypeError as e:
             raise WalkerConfException(
-                f"target={target_path_str} is not a valid directory"
+                f"v={tgt_dir_str} is not a valid directory"
                 " path on this operating system."
             ) from e
         except FileNotFoundError:
-            raise WalkerConfException(f"{target_path_str} was not found.")
+            raise WalkerConfException(f"{tgt_dir_str} was not found.")
 
         # Check copier inputs
         try:
@@ -242,11 +232,11 @@ class Walker:
             ) from e
         except TypeError as e:
             raise WalkerConfException(
-                f"target={target_path_str} is not a valid filename"
+                f"target={tgt_dir_str} is not a valid filename"
                 " on this operating system."
             ) from e
         except FileNotFoundError:
-            raise WalkerConfException(f"{target_path_str} was not found.")
+            raise WalkerConfException(f"{tgt_dir_str} was not found.")
 
         # Check for converter command:
         try:
@@ -255,6 +245,12 @@ class Walker:
             raise WalkerConfException(
                 "[converter.cmd]=<command> must be defined in the config."
             ) from e
+
+        # Check for converter command args:
+        try:
+            converter_cmd_args = toml_dict["converter"]["cmd_args"]
+        except KeyError:
+            converter_cmd_args = None
 
         # Check for converter config_update
         try:
@@ -266,8 +262,8 @@ class Walker:
             ) from e
 
         walker = Walker(
-            source=source,
-            target=target,
+            src_dir=src_dir,
+            tgt_dir=tgt_dir,
             walker_threadpool=walker_threadpool,
             converter_threadpool=converter_threadpool,
             results=results,
@@ -276,6 +272,7 @@ class Walker:
             converter_exe=exe,
             converter_output=converter_output_suffix,
             converter_cmd=converter_cmd,
+            converter_cmd_args=converter_cmd_args,
             config_file_name=config_file_name,
         )
         return walker
@@ -290,7 +287,7 @@ class Walker:
         futures: Set[Future] = set()
         futures.add(results.get())
         while futures:
-            logger.debug("waiting for %d threads.", len(futures))
+            logger.debug("Waiting for %d threads.", len(futures))
             wait(futures, return_when=FIRST_EXCEPTION)
             for future in futures:
                 if future.exception() is not None:
@@ -298,53 +295,75 @@ class Walker:
                         "Exception %s", str(future.exception())
                     ) from future.exception()
             futures = set()
-            while True:
+            while True:  # queue.empty() isn't reliable
                 try:
                     futures.add(results.get(block=False))
-                except Empty as e:
-                    print(e.__class__)
+                except Empty:
                     break
 
     def _walk(self) -> None:
-        logger.debug("Walking '%s'", str(self.source))
+        logger.debug("Walking '%s'", str(self.src_dir))
 
         # Create target dir deleting file if unexpectedly present
-        if not self.target.exists():
-            logger.debug("  Creating dir %s", str(self.target))
-            self.target.mkdir(exist_ok=True)
-        elif not self.target.is_dir():
-            logger.debug("  Replacing with dir %s", str(self.target))
-            self.target.unlink()
-            self.target.mkdir()
+        if not self.tgt_dir.exists():
+            logger.debug("  Creating dir %s", str(self.tgt_dir))
+            self.tgt_dir.mkdir(exist_ok=True)
+        elif not self.tgt_dir.is_dir():
+            logger.debug("  Replacing with dir %s", str(self.tgt_dir))
+            self.tgt_dir.unlink()
+            self.tgt_dir.mkdir()
 
-        # Read all objects in the directory
-        files = set(self.source.iterdir())
+        # Build set of all objects in the directory exluding .* and config:
+        src_objects: Set[Path] = set()
+        updated_config_file: Optional[Path] = None
+        for src_obj in self.src_dir.iterdir():
+            src_obj_name = src_obj.name
+            if src_obj_name[:1] == ".":
+                logger.debug("  Ignoring %s", str(src_obj))
+                continue
+            elif src_obj_name == self.config_file_name:
+                logger.debug("  Found config file %s", str(src_obj))
+                updated_config_file = src_obj
+                continue
+            else:
+                src_objects.add(src_obj)
 
-        # Look for an updated config before making more threads
-        config_update_path = self.source / str(self)
-        if config_update_path in files:
-            logger.debug("  Updating config %s", str(config_update_path))
-            files.remove(config_update_path)  # Do not process it further
-            # TODO update conversion settings for new walker
+        # TODO: figure out updated file
+        if updated_config_file:
             syncwalker = self
         else:
             syncwalker = self
 
         # Process every item in the directory
-        for item in files:
+        expected_tgt_names = set()  # Record all expected files in target
+        for item in src_objects:
+            item_name = item.name
             if item.is_dir():
                 # Submit a new worker to work on subdir
                 new_syncwalker: "Walker" = evolve(
                     syncwalker,
-                    source=syncwalker.source / item.name,
-                    target=syncwalker.target / item.name,
+                    src_dir=syncwalker.src_dir / item_name,
+                    tgt_dir=syncwalker.tgt_dir / item_name,
                 )
                 new_syncwalker.start()
+                expected_tgt_names.add(item_name)
             elif item.is_file():
-                if item.suffix in set(self.copier_input_exts):
-                    # Copy file
-                    tgt = self.target / item.name
+                if item.suffix in self.copier_input_exts:
+                    # Potential copy file
+                    tgt = self.tgt_dir / item_name
                     self._copy(item, tgt)
+                    expected_tgt_names.add(item_name)
+                elif item.suffix in self.conv_input_exts:
+                    # Potential convert file
+                    tgt_name = item.stem + self.converter_output
+                    tgt = self.tgt_dir / tgt_name
+                    self._convert(item, tgt)
+                    expected_tgt_names.add(tgt_name)
+
+        # Unlink / rmdir any extra items from tgt_dir
+        for tobj in self.tgt_dir.iterdir():
+            if tobj.name not in expected_tgt_names:
+                self._delete(tobj)
 
     def start(self):
         self.results.put(self.walker_threadpool.submit(Walker._walk_thread, self))
@@ -357,25 +376,72 @@ class Walker:
     def start_thread(sync_walker: "Walker") -> None:
         sync_walker.start()
 
+    @staticmethod
+    def _copy_thread(src: Path, tgt: Path):
+        logger.debug("  Considering for copy %s -> %s", src, tgt)
+        try:
+            src_mtime = src.stat().st_mtime_ns
+            tgt_mtime = tgt.stat().st_mtime_ns
+            if src_mtime >= tgt_mtime or src.is_dir() != tgt.is_dir():
+                logger.debug("    Copying newer %s -> %s", src, tgt)
+                if tgt.is_dir():
+                    shutil.rmtree(tgt)
+                else:
+                    tgt.unlink()
+                shutil.copy(src, tgt)
+        except FileNotFoundError:
+            logger.debug("    Copying %s -> %s", src, tgt)
+            shutil.copy(src, tgt)
+
     def _copy(self, src: Path, tgt: Path):
         self.results.put(
             self.walker_threadpool.submit(self._copy_thread, src=src, tgt=tgt)
         )
 
     @staticmethod
-    def _copy_thread(src: Path, tgt: Path):
-        logger.debug("Considering for copy %s -> %s", src, tgt)
-        exists = tgt.exists()
-        is_file = tgt.is_file()
-        if exists and not is_file:
-            logger.debug("    Unlinking non-file '%s'", str(tgt))
-            shutil.rmtree(tgt, ignore_errors=True)
-        elif is_file:
+    def _delete_thread(tgt: Path):
+        logger.debug("Considering for delete %s", str(tgt))
+        if tgt.is_dir():
+            logger.debug("    Deleting dir '%s'", str(tgt))
+            shutil.rmtree(tgt)
+        else:
+            logger.debug("    Deleting file '%s'", str(tgt))
+            tgt.unlink()
+
+    def _delete(self, tgt: Path):
+        self.results.put(self.walker_threadpool.submit(self._delete_thread, tgt=tgt))
+
+    def _actual_convert(self, src: Path, tgt: Path):
+        cmd_pre: List[str] = [str(self.converter_exe)] + self.converter_cmd.split()
+        fields = {"input": str(src), "output": str(tgt)}
+        if self.converter_cmd_args:
+            fields.update(self.converter_cmd_args)
+        cmd = []
+        for token in cmd_pre:
+            cmd.append(token.format_map(fields))
+        logger.debug("Conversion cmd: %s", cmd)
+        subprocess.run(cmd)
+
+    @staticmethod
+    def _convert_thread(src: Path, tgt: Path, walker: "Walker"):
+        logger.debug("  Considering for conversion %s -> %s", src, tgt)
+        try:
             src_mtime = src.stat().st_mtime_ns
             tgt_mtime = tgt.stat().st_mtime_ns
-            if src_mtime >= tgt_mtime:
-                logger.debug("    Copying newer '%s' to '%s'", str(src), str(tgt))
-                shutil.copy(src, tgt)
-        else:
-            logger.debug("    Copying '%s' to '%s'", str(src), str(tgt))
-            shutil.copy(src, tgt)
+            if src_mtime >= tgt_mtime or src.is_dir() != tgt.is_dir():
+                logger.debug("    Converting newer %s -> %s", src, tgt)
+                if tgt.is_dir():
+                    shutil.rmtree(tgt)
+                else:
+                    tgt.unlink()
+                walker._actual_convert(src=src, tgt=tgt)
+        except FileNotFoundError:
+            logger.debug("    Converting %s -> %s", src, tgt)
+            walker._actual_convert(src=src, tgt=tgt)
+
+    def _convert(self, src: Path, tgt: Path):
+        self.results.put(
+            self.converter_threadpool.submit(
+                self._convert_thread, src=src, tgt=tgt, walker=self
+            )
+        )
