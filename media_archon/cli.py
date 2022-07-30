@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .walker import WalkerFactory
+from .ranger import Walker
 
 CONFIG_FILE = "media-archon.toml"
 
@@ -29,7 +29,7 @@ def show_help_and_exit() -> None:
 @click.version_option()
 def main(config: Path) -> None:
     try:
-        factory = WalkerFactory.from_toml(config)
+        ranger = Walker.from_toml(config)
     except FileNotFoundError:
         click.echo(f"Could not find configuration file {CONFIG_FILE}.\n")
         show_help_and_exit()
@@ -37,6 +37,6 @@ def main(config: Path) -> None:
         click.echo(f"Could not read configuration file {CONFIG_FILE}.\n")
         show_help_and_exit()
 
-    factory.build_and_run()
-
+    ranger.build_and_run()
+    click.echo("Done.")
     return
