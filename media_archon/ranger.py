@@ -82,6 +82,7 @@ class Walker:
     converter_cmd: str
     converter_cmd_args: Dict[str, Union[int, str]]
     config_file_name: str
+    config_file_mtime: int
 
     @classmethod
     def from_toml(cls, config_path: Path) -> "Walker":
@@ -103,6 +104,8 @@ class Walker:
                 raise WalkerConfException(
                     f"Config '{config_path}' does not contain valid TOML."
                 ) from e
+
+        config_file_mtime = config_path.stat().st_mtime_ns
 
         logger.debug("Config: %s", str(toml_dict))
 
@@ -274,8 +277,27 @@ class Walker:
             converter_cmd=converter_cmd,
             converter_cmd_args=converter_cmd_args,
             config_file_name=config_file_name,
+            config_file_mtime=config_file_mtime,
         )
         return walker
+
+    def update_from_toml(self, config_path: Path) -> "Walker":
+        """Update command arguments mid-process"""
+        with open(config_path, "rb") as f:  # tomli requires "rb"
+            try:
+                toml_dict = tomli.load(f)
+            except tomli.TOMLDecodeError as e:
+                raise WalkerConfException(
+                    f"Config '{config_path}' does not contain valid TOML."
+                ) from e
+        new_walker = evolve(
+            self,
+            config_file_mtime=config_path.stat().st_mtime_ns,
+            converter_cmd=toml_dict["converter"]["cmd"],
+            converter_cmd_args=toml_dict["converter"]["cmd_args"],
+        )
+        logger.info("Updating converter cmd and cmd_args from %s", config_path)
+        return new_walker
 
     def build_and_run(self) -> None:
         # Drain the results queue of Futures and wait for them to be done
@@ -330,7 +352,7 @@ class Walker:
 
         # TODO: figure out updated file
         if updated_config_file:
-            syncwalker = self
+            syncwalker = self.update_from_toml(updated_config_file)
         else:
             syncwalker = self
 
@@ -342,22 +364,22 @@ class Walker:
                 # Submit a new worker to work on subdir
                 new_syncwalker: "Walker" = evolve(
                     syncwalker,
-                    src_dir=syncwalker.src_dir / item_name,
-                    tgt_dir=syncwalker.tgt_dir / item_name,
+                    src_dir=self.src_dir / item_name,
+                    tgt_dir=self.tgt_dir / item_name,
                 )
                 new_syncwalker.start()
                 expected_tgt_names.add(item_name)
             elif item.is_file():
-                if item.suffix in self.copier_input_exts:
+                if item.suffix in syncwalker.copier_input_exts:
                     # Potential copy file
-                    tgt = self.tgt_dir / item_name
-                    self._copy(item, tgt)
+                    tgt = syncwalker.tgt_dir / item_name
+                    syncwalker._copy(item, tgt)
                     expected_tgt_names.add(item_name)
-                elif item.suffix in self.conv_input_exts:
+                elif item.suffix in syncwalker.conv_input_exts:
                     # Potential convert file
-                    tgt_name = item.stem + self.converter_output
-                    tgt = self.tgt_dir / tgt_name
-                    self._convert(item, tgt)
+                    tgt_name = item.stem + syncwalker.converter_output
+                    tgt = syncwalker.tgt_dir / tgt_name
+                    syncwalker._convert(item, tgt)
                     expected_tgt_names.add(tgt_name)
 
         # Unlink / rmdir any extra items from tgt_dir
@@ -425,11 +447,17 @@ class Walker:
 
     @staticmethod
     def _convert_thread(src: Path, tgt: Path, walker: "Walker"):
+        """Thread payload to convert src to tgt if src.mtime is newer or
+        the current config file mtime is newer"""
         logger.debug("  Considering for conversion %s -> %s", src, tgt)
         try:
             src_mtime = src.stat().st_mtime_ns
             tgt_mtime = tgt.stat().st_mtime_ns
-            if src_mtime >= tgt_mtime or src.is_dir() != tgt.is_dir():
+            if (
+                src_mtime >= tgt_mtime
+                or src.is_dir() != tgt.is_dir()
+                or walker.config_file_mtime >= tgt_mtime
+            ):
                 logger.debug("    Converting newer %s -> %s", src, tgt)
                 if tgt.is_dir():
                     shutil.rmtree(tgt)
