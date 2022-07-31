@@ -362,7 +362,8 @@ class Walker:
 
         # Unlink / rmdir any extra items from tgt_dir
         for tobj in self.tgt_dir.iterdir():
-            if tobj.name not in expected_tgt_names:
+            tobj_name = tobj.name
+            if tobj_name not in expected_tgt_names and tobj_name[:1] != ".":
                 self._delete(tobj)
 
     def start(self):
