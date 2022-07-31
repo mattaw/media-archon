@@ -30,6 +30,9 @@ logger = getLogger(__name__)
 # Heavy threadpool should be cpu_count * 2
 
 
+CONFIG_FILE_NAME = "media-archon.toml"
+
+
 def validate_pos_int(var_: Any) -> int:
     """Convert var into an int and validate it is positive"""
     var_ = int(var_)  # Rases ValueError if not able to convert
@@ -85,11 +88,12 @@ class Walker:
     config_file_mtime: int
 
     @classmethod
-    def from_toml(cls, config_path: Path) -> "Walker":
+    def from_toml(cls, src_dir: Path, config_path: Optional[Path]) -> "Walker":
         """Read the config file and build the ranger from the config
 
         Args:
-            file: Path to the TOML config file.
+            config_path: Path to the TOML config file.
+            src_dir: Path to the media library to convert.
 
         Raises:
             FileNotFoundError: Config file not found at the config_path.
@@ -97,6 +101,23 @@ class Walker:
             TOMLDecodeError: Config file is not valid TOML
             WalkerConfException: Config file is not correct
         """
+        try:
+            src_dir = validate_is_dir(src_dir)
+        except TypeError as e:
+            raise WalkerConfException(
+                f"{src_dir} is not a valid source directory"
+                " path on this operating system."
+            ) from e
+        except FileNotFoundError:
+            raise WalkerConfException(f"{src_dir} was not found.")
+
+        if config_path is not None:
+            config_path = config_path.expanduser()
+        elif (src_dir / CONFIG_FILE_NAME).is_file():
+            config_path = src_dir / CONFIG_FILE_NAME
+        if config_path is None:
+            raise FileNotFoundError(f"Config '{config_path}' not found.")
+
         with open(config_path, "rb") as f:  # tomli requires "rb"
             try:
                 toml_dict = tomli.load(f)
@@ -155,20 +176,6 @@ class Walker:
         results: Queue[Future] = Queue()
 
         # Check/sanitize source and target:
-        try:
-            src_dir_str = toml_dict["src_dir"]
-            src_dir = validate_is_dir(src_dir_str)
-        except KeyError as e:
-            raise WalkerConfException(
-                "src_dir=<dir> must be defined in the config."
-            ) from e
-        except TypeError as e:
-            raise WalkerConfException(
-                f"src_dir={src_dir_str} is not a valid directory"
-                " path on this operating system."
-            ) from e
-        except FileNotFoundError:
-            raise WalkerConfException(f"{src_dir_str} was not found.")
 
         try:
             tgt_dir_str = toml_dict["tgt_dir"]
@@ -323,81 +330,68 @@ class Walker:
                 except Empty:
                     break
 
-    def _walk(self) -> None:
-        logger.debug("Walking '%s'", str(self.src_dir))
+    @staticmethod
+    def _walk_thread(walker: "Walker") -> None:
+        logger.debug("Walking '%s'", str(walker.src_dir))
 
         # Create target dir deleting file if unexpectedly present
-        if not self.tgt_dir.exists():
-            logger.debug("  Creating dir %s", str(self.tgt_dir))
-            self.tgt_dir.mkdir(exist_ok=True)
-        elif not self.tgt_dir.is_dir():
-            logger.debug("  Replacing with dir %s", str(self.tgt_dir))
-            self.tgt_dir.unlink()
-            self.tgt_dir.mkdir()
+        if not walker.tgt_dir.exists():
+            logger.debug("  Creating dir %s", str(walker.tgt_dir))
+            walker.tgt_dir.mkdir(exist_ok=True)
+        elif not walker.tgt_dir.is_dir():
+            logger.debug("  Replacing with dir %s", str(walker.tgt_dir))
+            walker.tgt_dir.unlink()
+            walker.tgt_dir.mkdir()
 
-        # Build set of all objects in the directory exluding .* and config:
+        # Build set of all objects in the directory exluding .* and
+        #  handling an updated config
         src_objects: Set[Path] = set()
-        updated_config_file: Optional[Path] = None
-        for src_obj in self.src_dir.iterdir():
+        for src_obj in walker.src_dir.iterdir():
             src_obj_name = src_obj.name
             if src_obj_name[:1] == ".":
                 logger.debug("  Ignoring %s", str(src_obj))
                 continue
-            elif src_obj_name == self.config_file_name:
+            elif src_obj_name == walker.config_file_name:
                 logger.debug("  Found config file %s", str(src_obj))
-                updated_config_file = src_obj
+                walker = walker.update_from_toml(src_obj)
                 continue
             else:
                 src_objects.add(src_obj)
-
-        # TODO: figure out updated file
-        if updated_config_file:
-            syncwalker = self.update_from_toml(updated_config_file)
-        else:
-            syncwalker = self
 
         # Process every item in the directory
         expected_tgt_names = set()  # Record all expected files in target
         for item in src_objects:
             item_name = item.name
             if item.is_dir():
-                # Submit a new worker to work on subdir
+                # Create an updated walker to work on subdir
                 new_syncwalker: "Walker" = evolve(
-                    syncwalker,
-                    src_dir=self.src_dir / item_name,
-                    tgt_dir=self.tgt_dir / item_name,
+                    walker,
+                    src_dir=walker.src_dir / item_name,
+                    tgt_dir=walker.tgt_dir / item_name,
                 )
                 new_syncwalker.start()
                 expected_tgt_names.add(item_name)
             elif item.is_file():
-                if item.suffix in syncwalker.copier_input_exts:
+                if item.suffix in walker.copier_input_exts:
                     # Potential copy file
-                    tgt = syncwalker.tgt_dir / item_name
-                    syncwalker._copy(item, tgt)
+                    tgt = walker.tgt_dir / item_name
+                    walker._copy(item, tgt)
                     expected_tgt_names.add(item_name)
-                elif item.suffix in syncwalker.conv_input_exts:
+                elif item.suffix in walker.conv_input_exts:
                     # Potential convert file
-                    tgt_name = item.stem + syncwalker.converter_output
-                    tgt = syncwalker.tgt_dir / tgt_name
-                    syncwalker._convert(item, tgt)
+                    tgt_name = item.stem + walker.converter_output
+                    tgt = walker.tgt_dir / tgt_name
+                    walker._convert(item, tgt)
                     expected_tgt_names.add(tgt_name)
 
         # Unlink / rmdir any extra items from tgt_dir
-        for tobj in self.tgt_dir.iterdir():
+        for tobj in walker.tgt_dir.iterdir():
             tobj_name = tobj.name
             if tobj_name not in expected_tgt_names and tobj_name[:1] != ".":
-                self._delete(tobj)
+                walker._delete(tobj)
 
     def start(self):
         self.results.put(self.walker_threadpool.submit(Walker._walk_thread, self))
-
-    @staticmethod
-    def _walk_thread(sync_walker: "Walker") -> None:
-        sync_walker._walk()
-
-    @staticmethod
-    def start_thread(sync_walker: "Walker") -> None:
-        sync_walker.start()
 
     @staticmethod
     def _copy_thread(src: Path, tgt: Path):
@@ -436,7 +430,7 @@ class Walker:
 
     def _actual_convert(self, src: Path, tgt: Path):
         cmd_pre: List[str] = [str(self.converter_exe)] + self.converter_cmd.split()
-        fields = {"input": str(src), "output": str(tgt)}
+        fields: Dict[str, Union[int, str]] = {"input": str(src), "output": str(tgt)}
         if self.converter_cmd_args:
             fields.update(self.converter_cmd_args)
         cmd = []

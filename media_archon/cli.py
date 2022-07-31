@@ -3,12 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 from pathlib import Path
+from typing import Optional
 
 import click
 
-from .ranger import Walker
-
-CONFIG_FILE = "media-archon.toml"
+from .walker import Walker, CONFIG_FILE_NAME
 
 
 def show_help_and_exit() -> None:
@@ -21,20 +20,21 @@ def show_help_and_exit() -> None:
 @click.option(
     "-c",
     "--config",
-    type=click.Path(readable=False),
-    show_default=True,
-    default=Path(CONFIG_FILE),
+    type=click.Path(exists=False),
     help="Specify a config file.",
 )
+@click.argument(
+    "src", type=click.Path(exists=True, file_okay=False, dir_okay=True, readable=True)
+)
 @click.version_option()
-def main(config: Path) -> None:
+def main(config: Optional[Path], src: Path) -> None:
     try:
-        ranger = Walker.from_toml(config)
+        ranger = Walker.from_toml(src_dir=src, config_path=config)
     except FileNotFoundError:
-        click.echo(f"Could not find configuration file {CONFIG_FILE}.\n")
+        click.echo(f"Could not find configuration file {CONFIG_FILE_NAME}.\n")
         show_help_and_exit()
     except PermissionError:
-        click.echo(f"Could not read configuration file {CONFIG_FILE}.\n")
+        click.echo(f"Could not read configuration file {CONFIG_FILE_NAME}.\n")
         show_help_and_exit()
 
     ranger.build_and_run()

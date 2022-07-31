@@ -1,6 +1,5 @@
 # walkers = 100
 # converters = 20
-src_dir = "/fish/syncthing/Music Archive"
 tgt_dir = "/fish/syncthing/Music"
 
 [copier]
