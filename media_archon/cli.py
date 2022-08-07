@@ -2,12 +2,18 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 import click
 
-from .walker import Walker, CONFIG_FILE_NAME
+from .walker import CONFIG_FILE_NAME, Walker
+
+logging.basicConfig(
+    format="%(asctime)s %(threadName)-10s %(levelname)-7s %(message)s",
+    level=logging.INFO,
+)
 
 
 def show_help_and_exit() -> None:

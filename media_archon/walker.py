@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from logging import getLogger
@@ -17,9 +17,6 @@ from typing import Any, Dict, List, Optional, Set, Union
 import tomli
 from attrs import define, evolve
 
-logging.basicConfig(
-    format="%(asctime)s:%(threadName)-10s - %(message)s", level=logging.DEBUG
-)
 logger = getLogger(__name__)
 
 # Note - in python if we a=b where b is anything other than str, int + a few more types
@@ -31,6 +28,12 @@ logger = getLogger(__name__)
 
 
 CONFIG_FILE_NAME = "media-archon.toml"
+
+
+def sp(path: Path) -> str:
+    """Shorten path to parent and filename"""
+    path_list = str(path).split(os.sep)
+    return "." + os.sep + os.sep.join(path_list[-2:])
 
 
 def validate_pos_int(var_: Any) -> int:
@@ -160,8 +163,8 @@ class Walker:
             )
             num_cpus = 1
 
-        num_walkers = num_cpus * 10 if not num_walkers else num_walkers
-        num_converters = num_cpus * 2 if not num_converters else num_converters
+        num_walkers = num_cpus * 5 if not num_walkers else num_walkers
+        num_converters = num_cpus * 1 if not num_converters else num_converters
 
         walker_threadpool = ThreadPoolExecutor(
             max_workers=num_walkers, thread_name_prefix="light"
@@ -169,8 +172,8 @@ class Walker:
         converter_threadpool = ThreadPoolExecutor(
             max_workers=num_converters, thread_name_prefix="heavy"
         )
-        logger.info("Walker threadpool created. Size: %d", num_walkers)
-        logger.info("Converter threadpool created. Size: %d", num_converters)
+        logger.info("%d walker threads created", num_walkers)
+        logger.info("%d converter threads created", num_converters)
 
         # Create results queue - this can get quite large!
         results: Queue[Future] = Queue()
@@ -303,7 +306,7 @@ class Walker:
             converter_cmd=toml_dict["converter"]["cmd"],
             converter_cmd_args=toml_dict["converter"]["cmd_args"],
         )
-        logger.info("Updating converter cmd and cmd_args from %s", config_path)
+        logger.info("Updating converter cmd and cmd_args from %s", sp(config_path))
         return new_walker
 
     def build_and_run(self) -> None:
@@ -336,27 +339,27 @@ class Walker:
 
         # Create target dir deleting file if unexpectedly present
         if not walker.tgt_dir.exists():
-            logger.debug("  Creating dir %s", str(walker.tgt_dir))
+            logger.debug("  Creating dir %s", sp(walker.tgt_dir))
             walker.tgt_dir.mkdir(exist_ok=True)
         elif not walker.tgt_dir.is_dir():
-            logger.debug("  Replacing with dir %s", str(walker.tgt_dir))
+            logger.debug("  Replacing with dir %s", sp(walker.tgt_dir))
             walker.tgt_dir.unlink()
             walker.tgt_dir.mkdir()
 
         # Build set of all objects in the directory exluding .* and
         #  handling an updated config
-        src_objects: Set[Path] = set()
+        src_objects: List[Path] = []
         for src_obj in walker.src_dir.iterdir():
             src_obj_name = src_obj.name
             if src_obj_name[:1] == ".":
-                logger.debug("  Ignoring %s", str(src_obj))
+                logger.debug("  Ignoring %s", sp(src_obj))
                 continue
             elif src_obj_name == walker.config_file_name:
-                logger.debug("  Found config file %s", str(src_obj))
+                logger.debug("  Found config file %s", sp(src_obj))
                 walker = walker.update_from_toml(src_obj)
                 continue
             else:
-                src_objects.add(src_obj)
+                src_objects.append(src_obj)
 
         # Process every item in the directory
         expected_tgt_names = set()  # Record all expected files in target
@@ -395,20 +398,18 @@ class Walker:
 
     @staticmethod
     def _copy_thread(src: Path, tgt: Path):
-        logger.debug("  Considering for copy %s -> %s", src, tgt)
+        logger.debug("  Copy? %s", sp(src))
         try:
-            src_mtime = src.stat().st_mtime_ns
             tgt_mtime = tgt.stat().st_mtime_ns
+            src_mtime = src.stat().st_mtime_ns
             if src_mtime >= tgt_mtime or src.is_dir() != tgt.is_dir():
-                logger.debug("    Copying newer %s -> %s", src, tgt)
+                logger.info("    Copying newer %s", sp(src))
                 if tgt.is_dir():
                     shutil.rmtree(tgt)
-                else:
-                    tgt.unlink()
-                shutil.copy(src, tgt)
+                shutil.copyfile(src, tgt)
         except FileNotFoundError:
-            logger.debug("    Copying %s -> %s", src, tgt)
-            shutil.copy(src, tgt)
+            logger.info("    Copying %s", sp(src))
+            shutil.copyfile(src, tgt)
 
     def _copy(self, src: Path, tgt: Path):
         self.results.put(
@@ -417,50 +418,57 @@ class Walker:
 
     @staticmethod
     def _delete_thread(tgt: Path):
-        logger.debug("Considering for delete %s", str(tgt))
+        logger.debug("  Delete? %s", sp(tgt))
         if tgt.is_dir():
-            logger.debug("    Deleting dir '%s'", str(tgt))
+            logger.info("    Cleaning dir %s", sp(tgt))
             shutil.rmtree(tgt)
         else:
-            logger.debug("    Deleting file '%s'", str(tgt))
+            logger.info("    Cleaning file %s", sp(tgt))
             tgt.unlink()
 
     def _delete(self, tgt: Path):
         self.results.put(self.walker_threadpool.submit(self._delete_thread, tgt=tgt))
 
     def _actual_convert(self, src: Path, tgt: Path):
-        cmd_pre: List[str] = [str(self.converter_exe)] + self.converter_cmd.split()
-        fields: Dict[str, Union[int, str]] = {"input": str(src), "output": str(tgt)}
-        if self.converter_cmd_args:
-            fields.update(self.converter_cmd_args)
-        cmd = []
-        for token in cmd_pre:
-            cmd.append(token.format_map(fields))
-        logger.debug("Conversion cmd: %s", cmd)
-        subprocess.run(cmd)
+        with tempfile.TemporaryDirectory(prefix="media-archon") as tmpdir:
+            tmptgt = tmpdir + str(tgt.name)
+            cmd_pre: List[str] = [str(self.converter_exe)] + self.converter_cmd.split()
+            fields: Dict[str, Union[int, str]] = {
+                "input": str(src),
+                "output": tmptgt,
+            }
+            if self.converter_cmd_args:
+                fields.update(self.converter_cmd_args)
+            cmd = []
+            for token in cmd_pre:
+                cmd.append(token.format_map(fields))
+            logger.debug("Conversion cmd: %s", cmd)
+            subprocess.run(cmd, capture_output=True, check=True)
+            shutil.copyfile(tmptgt, tgt)
 
     @staticmethod
     def _convert_thread(src: Path, tgt: Path, walker: "Walker"):
         """Thread payload to convert src to tgt if src.mtime is newer or
         the current config file mtime is newer"""
-        logger.debug("  Considering for conversion %s -> %s", src, tgt)
+        logger.debug("  Convert? %s", sp(src))
         try:
-            src_mtime = src.stat().st_mtime_ns
-            tgt_mtime = tgt.stat().st_mtime_ns
-            if (
-                src_mtime >= tgt_mtime
-                or src.is_dir() != tgt.is_dir()
-                or walker.config_file_mtime >= tgt_mtime
-            ):
-                logger.debug("    Converting newer %s -> %s", src, tgt)
-                if tgt.is_dir():
-                    shutil.rmtree(tgt)
-                else:
-                    tgt.unlink()
+            try:
+                tgt_mtime = tgt.stat().st_mtime_ns
+                src_mtime = src.stat().st_mtime_ns
+                if (
+                    src_mtime >= tgt_mtime
+                    or src.is_dir() != tgt.is_dir()
+                    or walker.config_file_mtime >= tgt_mtime
+                ):
+                    logger.info("    Converting newer %s", sp(src))
+                    if tgt.is_dir():
+                        shutil.rmtree(tgt)
+                    walker._actual_convert(src=src, tgt=tgt)
+            except FileNotFoundError:
+                logger.info("    Converting %s", sp(src))
                 walker._actual_convert(src=src, tgt=tgt)
-        except FileNotFoundError:
-            logger.debug("    Converting %s -> %s", src, tgt)
-            walker._actual_convert(src=src, tgt=tgt)
+        except subprocess.CalledProcessError as e:
+            logger.error("  Conversion Failed", exc_info=e)
 
     def _convert(self, src: Path, tgt: Path):
         self.results.put(
