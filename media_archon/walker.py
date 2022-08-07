@@ -430,8 +430,8 @@ class Walker:
         self.results.put(self.walker_threadpool.submit(self._delete_thread, tgt=tgt))
 
     def _actual_convert(self, src: Path, tgt: Path):
-        with tempfile.TemporaryDirectory(prefix="media-archon") as tmpdir:
-            tmptgt = tmpdir + str(tgt.name)
+        with tempfile.TemporaryDirectory(prefix="media-archon-") as tmpdir:
+            tmptgt = tmpdir + os.sep + str(tgt.name)
             cmd_pre: List[str] = [str(self.converter_exe)] + self.converter_cmd.split()
             fields: Dict[str, Union[int, str]] = {
                 "input": str(src),
