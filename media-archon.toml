@@ -8,7 +8,7 @@ inputs = [".jpg", ".jpeg", ".png", ".opus"]
 [converter]
 inputs = [".wav", ".pcm", ".flac", ".mp3"]
 output = ".ogg"
-exe = "~/freac-1.1.6-linux-x86_64.AppImage"
+exe = "~/freac-continuous-linux-x86_64.AppImage"
 cmd = "freaccmd --quiet -e opus --bitrate {bitrate} {input} -o {output}"
 config = "media-archon-override.toml"
 

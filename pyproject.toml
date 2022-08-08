@@ -2,17 +2,28 @@
 name = "media-archon"
 dynamic = ["version"]
 description = "Mirror a directory tree of audio files converting the files to opus if needed"
-authors = [
-    {name = "Matthew Swabey", email = "matthew@swabey.org"},
-]
-dependencies = [
-    "attrs>=21.4.0",
-    "cattrs>=22.1.0",
-    "click>=8.1.3",
-]
+authors = [{ name = "Matthew Swabey", email = "matthew@swabey.org" }]
+dependencies = ["attrs>=21.4.0", "cattrs>=22.1.0", "click>=8.1.3"]
 requires-python = ">=3.9"
 readme = "README.md"
-license = {text = "AGPL-3.0-or-later"}
+license = { text = "AGPL-3.0-or-later" }
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Topic :: Multimedia",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Topic :: Software Development :: Build Tools",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: POSIX :: BSD",
+    "Operating System :: Unix",
+    "Intended Audience :: End Users/Desktop",
+]
 
 [project.scripts]
 media-archon = "media_archon.cli:main"
@@ -23,12 +34,7 @@ media-archon = "media_archon.cli:main"
 version = { source = "file", path = "media_archon/__about__.py" }
 
 [tool.pdm.dev-dependencies]
-test = [
-    "pytest>=7.1.2",
-    "black>=22.6.0",
-    "flake8>=4.0.1",
-    "mypy>=0.971",
-]
+test = ["pytest>=7.1.2", "black>=22.6.0", "flake8>=4.0.1", "mypy>=0.971"]
 
 [tool.pdm.scripts]
 
