@@ -16,7 +16,7 @@
 pip install media-archon
 ```
 
-Copy the config file `media-archon.toml` into the top level of the directory tree of media you wish to convert and edit to meet your needs.
+Copy the config file `media-archon.toml` from the [epository](https://github.com/mattaw/media-archon) into the top level of the directory tree of media you wish to convert and edit to meet your needs.
 
 ## Theory
 
@@ -25,18 +25,24 @@ Media archon is an aggressively multithreaded Linux/Unix/MacOSX tool designed to
 When executed with `media-archon /directory/of/media/files/`, it will: 
 
 1. Look for and read the `/directory/of/media/files/media-archon.toml`. 
-1. Attempt to discover how many threads can execute in parallel on the host (Threads).
-1. Create two threadpools, one `light` (default 10 × Threads) for exploring directories and copying, and one `heavy` (default 1 × Threads). These can be overriden in the config.
+1. Attempt to discover how many threads can execute in parallel on the host (`THREADS`).
+1. Create two threadpools, one `light` with `10*THREADS` threads for exploring directories and copying, and one `heavy` of `1*THREADS` threads for conversions or other CPU heavy tasks. (The numbers of threads can be overridden in the configuration file.)
 
-After configuring itself it will schedule a `light` thread to walk `/directory/of/media/files/` which will:
+After configuring itself a `light` walker thread will be scheduled on the `light` threadpool to walk `/directory/of/media/files/`. The thread will:
 
 1. Iterate through the objects in the directory looking for a configuration override file (default `media-archon-override.toml`). If found it will update its converter parameters for this directory and all its subdirectories.
 1. Loop through the objects again and depending on whether it is a directory or a file with a particular extension (e.g. `.mp3`):
-   1. If a directory, schedule a new `light` thread to search it in parallel.
+   1. If a directory, schedule a new walker `light` thread to search the subdirectory in parallel.
    2. If a file on the ignore list (`.*`) ignore.
-   3. If a file with an extension in the copy list schedule a `light` thread to copy it to the destination.
-   4. If a file with an extension in the convert list schedule a `heavy` thread to convert it from the source to the target using the supplied command line in the config.
-1. Delete files and directories in the target that are not in the source.
+   3. If a file with an extension in the copy list, and one or more of the following conditions are met schedule a `light` thread to copy it to the target:
+       1. The `media-archon.toml` mtime is newer than the target mtime
+       2. Any `media-archon-override.toml` mtime in the current or parent directory is newer than the target
+       3. The source file mtime is newer than the target mtime
+   4. If a file with an extension in the convert list, and one or more of the following conditions are met schedule a `heavy` thread to convert it from the source to the target using the supplied command line in the config.
+       1. The `media-archon.toml` mtime is newer than the target mtime
+       2. Any `media-archon-override.toml` mtime in the current or parent directory is newer than the target
+       3. The source file mtime is newer than the target mtime   
+1. Schedule `light` threads to delete files and directories in the target that are not in the source.
 
 ## License
 
