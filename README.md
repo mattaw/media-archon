@@ -16,15 +16,15 @@
 pip install media-archon
 ```
 
-Copy the config file `media-archon.toml` from the [epository](https://github.com/mattaw/media-archon) into the top level of the directory tree of media you wish to convert and edit to meet your needs.
+Copy the config file `media-archon.toml` from the [repository](https://github.com/mattaw/media-archon) into the top level of the directory tree of media you wish to convert and edit to meet your needs.
 
 ## Theory
 
 Media archon is an aggressively multithreaded Linux/Unix/MacOSX tool designed to mirror a tree of source media files to a destination tree, converting matching media using any command line tool selected by the user. It has been designed and tested around using the excellent [fre:ac](https://www.freac.org/) opensource audio software to convert existing MP3 audiobooks etc. into Opus files for unbeatable size vs. quality.
 
-When executed with `media-archon /directory/of/media/files/`, it will: 
+When executed with `media-archon /directory/of/media/files/`, it will:
 
-1. Look for and read the `/directory/of/media/files/media-archon.toml`. 
+1. Look for and read the `/directory/of/media/files/media-archon.toml`.
 1. Attempt to discover how many threads can execute in parallel on the host (`THREADS`).
 1. Create two threadpools, one `light` with `10*THREADS` threads for exploring directories and copying, and one `heavy` of `1*THREADS` threads for conversions or other CPU heavy tasks. (The numbers of threads can be overridden in the configuration file.)
 
@@ -41,7 +41,7 @@ After configuring itself a `light` walker thread will be scheduled on the `light
    4. If a file with an extension in the convert list, and one or more of the following conditions are met schedule a `heavy` thread to convert it from the source to the target using the supplied command line in the config.
        1. The `media-archon.toml` mtime is newer than the target mtime
        2. Any `media-archon-override.toml` mtime in the current or parent directory is newer than the target
-       3. The source file mtime is newer than the target mtime   
+       3. The source file mtime is newer than the target mtime
 1. Schedule `light` threads to delete files and directories in the target that are not in the source.
 
 ## License
